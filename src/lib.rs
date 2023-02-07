@@ -39,8 +39,8 @@ async fn serve(req: Request, db: libsql_client::Connection) -> Result<Response> 
 
     //todo: transaction: bump, add lat + long
     let cf = req.cf();
-    let airport = "x";//cf.colo();
-    let country = "x";//cf.country().unwrap_or_default();
+    let airport = cf.colo();
+    let country = cf.country().unwrap_or_default();
     let city = cf.city().unwrap_or_default();
     let coordinates = cf.coordinates().unwrap_or_default();
     console_log!("INFO {} {} {} {:?}", airport, country, city, coordinates);
