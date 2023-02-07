@@ -3,20 +3,7 @@ use worker::*;
 
 mod utils;
 
-trait Foo {
-    fn some_method(&self);
-}
-
-struct Bar {
-    thing: usize,
-}
-
-impl Foo for Bar {
-    fn some_method(&self) {
-        println!("self {}", self.thing);
-    }
-}
-
+// Log each request to dev console
 fn log_request(req: &Request) {
     console_log!(
         "{} - [{}], located at: {:?}, within: {}",
@@ -27,71 +14,11 @@ fn log_request(req: &Request) {
     );
 }
 
-async fn serve(req: Request, db: libsql_client::Connection) -> Result<Response> {
-    db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")
-    .await
-    .ok();
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, PRIMARY KEY (lat, long))",
-    )
-    .await
-    .ok();
-
-    //todo: transaction: bump, add lat + long
-    let cf = req.cf();
-    let airport = cf.colo();
-    let country = cf.country().unwrap_or_default();
-    let city = cf.city().unwrap_or_default();
-    let coordinates = cf.coordinates().unwrap_or_default();
-    console_log!("INFO {} {} {} {:?}", airport, country, city, coordinates);
-    db.execute(format!(
-        "INSERT INTO counter VALUES ('{}', 'region was used!')",
-        req.cf().region().unwrap_or_else(|| "unknown region".into())
-    ))
-    .await
-    .ok();
-
-    let response = db
-        .execute("SELECT * FROM counter WHERE key = 'turso'")
-        .await?;
-    let counter_value = match response {
-        QueryResult::Error((msg, _)) => return Response::from_html(format!("Error: {}", msg)),
-        QueryResult::Success((result, _)) => {
-            let first_row = result
-                .rows
-                .first()
-                .ok_or(worker::Error::from("No rows found in the counter table"))?;
-            match first_row.cells.get("value") {
-                Some(v) => match v {
-                    CellValue::Number(v) => *v,
-                    _ => return Response::from_html("Unexpected counter value"),
-                },
-                _ => return Response::from_html("No value for 'value' column"),
-            }
-        }
-    };
-
-    let update_result = db
-        .transaction([Statement::with_params(
-            "UPDATE counter SET value = ? WHERE key = ?",
-            &[CellValue::Number(counter_value + 1), "turso".into()],
-        )])
-        .await;
-    let counter_status = match update_result {
-        Ok(_) => format!(
-            "Counter was just successfully bumped: {} -> {}. Congrats!",
-            counter_value,
-            counter_value + 1,
-        ),
-        Err(e) => format!("Counter update error: {e}"),
-    };
-
-    let mut html =
-        "And here's the whole database, dumped: <br /><table style=\"border: 1px solid\">"
-            .to_string();
-    let response = db.execute("SELECT * FROM counter").await?;
-    match response {
-        QueryResult::Error((msg, _)) => return Response::from_html(format!("Error: {}", msg)),
+// Take a query result and render it into a HTML table
+fn result_to_html_table(result: QueryResult) -> String {
+    let mut html = "<table style=\"border: 1px solid\">".to_string();
+    match result {
+        QueryResult::Error((msg, _)) => return format!("Error: {}", msg),
         QueryResult::Success((result, _)) => {
             for column in &result.columns {
                 html += &format!("<th style=\"border: 1px solid\">{}</th>", column);
@@ -99,15 +26,110 @@ async fn serve(req: Request, db: libsql_client::Connection) -> Result<Response> 
             for row in result.rows {
                 html += "<tr style=\"border: 1px solid\">";
                 for column in &result.columns {
-                    html += &format!("<td>{:?}</td>", row.cells[column]);
+                    html += &format!("<td>{}</td>", row.cells[column]);
                 }
                 html += "</tr>";
             }
         }
     };
     html += "</table>";
+    html
+}
 
-    let html = counter_status;
+// Create a javascript canvas which loads a map of visited airports
+fn create_map_canvas(result: QueryResult) -> String {
+    let mut canvas = r#"
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/0.5.16/p5.min.js" type="text/javascript"></script>
+  <script src="https://unpkg.com/mappa-mundi/dist/mappa.js" type="text/javascript"></script>
+    <script>
+    let myMap;
+    let canvas;
+    const mappa = new Mappa('Leaflet');
+    const options = {
+      lat: 0,
+      lng: 0,
+      zoom: 1,
+      style: "http://{s}.tile.osm.org/{z}/{x}/{y}.png"
+    }
+
+    function setup(){
+      canvas = createCanvas(640,480);
+      myMap = mappa.tileMap(options); 
+      myMap.overlay(canvas) 
+    
+      fill(200, 100, 100);
+      myMap.onChange(drawPoint);
+    }
+
+    function draw(){
+    }
+
+    function drawPoint(){
+      clear();
+      let point;"#.to_owned();
+
+    match result {
+        QueryResult::Error((msg, _)) => console_log!("Error: {}", msg),
+        QueryResult::Success((result, _)) => {
+            for row in result.rows {
+                canvas += &format!(
+                    "point = myMap.latLngToPixel({}, {});\nellipse(point.x, point.y, 10, 10);\ntext({}, point.x, point.y);\n",
+                    row.cells["lat"], row.cells["long"], row.cells["airport"]
+                );
+            }
+        }
+    };
+    canvas += "}</script>";
+    canvas
+}
+
+// Serve a request to load the page
+async fn serve(req: Request, db: libsql_client::Connection) -> Result<Response> {
+    // Recreate the tables if they do not exist yet
+    db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")
+    .await
+    .ok();
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, airport TEXT, PRIMARY KEY (lat, long))",
+    )
+    .await
+    .ok();
+
+    // Update the tables - the per-city counter and airport coordinates
+    let cf = req.cf();
+    let airport = cf.colo();
+    let country = cf.country().unwrap_or_default();
+    let city = cf.city().unwrap_or_default();
+    let coordinates = cf.coordinates().unwrap_or_default();
+    db.transaction([
+        Statement::with_params(
+            "INSERT INTO counter VALUES (?, ?, 0)",
+            &[country.as_str(), city.as_str()],
+        ),
+        Statement::with_params(
+            "UPDATE counter SET value = value + 1 WHERE country = ? AND city = ?",
+            &[country, city],
+        ),
+        Statement::with_params(
+            "INSERT INTO coordinates VALUES (?, ?, ?)",
+            &[
+                CellValue::Float(coordinates.0 as f64),
+                CellValue::Float(coordinates.1 as f64),
+                airport.into(),
+            ],
+        ),
+    ])
+    .await
+    .ok();
+
+    let counter_response = db.execute("SELECT * FROM counter").await?;
+    let scoreboard = result_to_html_table(counter_response);
+
+    let canvas = create_map_canvas(
+        db.execute("SELECT airport, lat, long FROM coordinates")
+            .await?,
+    );
+    let html = format!("{} Scoreboard: <br /> {}", canvas, scoreboard);
     Response::from_html(html)
 }
 
@@ -115,17 +137,9 @@ async fn serve(req: Request, db: libsql_client::Connection) -> Result<Response> 
 pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Response> {
     log_request(&req);
 
-    // Optionally, get more helpful error messages written to the console in the case of a panic.
     utils::set_panic_hook();
-
-    // Optionally, use the Router to handle matching endpoints, use ":name" placeholders, or "*name"
-    // catch-alls to match on specific patterns. Alternatively, use `Router::with_data(D)` to
-    // provide arbitrary data that will be accessible in each route via the `ctx.data()` method.
     let router = Router::new();
 
-    // Add as many routes as your Worker needs! Each route will get a `Request` for handling HTTP
-    // functionality and a `RouteContext` which you can use to  and get route parameters and
-    // Environment bindings like KV Stores, Durable Objects, Secrets, and Variables.
     router
         .get_async("/", |req, ctx| async move {
             let db = match libsql_client::Connection::connect_from_ctx(&ctx) {
