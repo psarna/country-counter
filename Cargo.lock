@@ -3,6 +3,12 @@
 version = 3
 
 [[package]]
+name = "anyhow"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "224afbd727c3d6e4b90103ece64b8d1b67fbb1973b1046c2281eed3f3803f800"
+
+[[package]]
 name = "async-trait"
 version = "0.1.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -97,6 +103,7 @@ dependencies = [
 name = "country-counter"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "cfg-if 0.1.10",
  "console_error_panic_hook",
  "libsql-client",
@@ -217,13 +224,16 @@ dependencies = [
 
 [[package]]
 name = "libsql-client"
-version = "0.3.7"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7251e3f3f2b16495a050c3cb4bd10ca0f4c7ce6e273037c483d75301695077ab"
+checksum = "17476660f7c46086753f5d75780508ef0d5640839ba33f033fad22a25c4c7d3b"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "base64",
  "num-traits",
  "serde_json",
+ "url",
  "worker",
 ]
 

@@ -1,4 +1,4 @@
-use libsql_client::{CellValue, QueryResult, Statement};
+use libsql_client::{QueryResult, Statement, Value};
 use worker::*;
 
 mod utils;
@@ -18,10 +18,10 @@ fn log_request(req: &Request) {
 fn result_to_html_table(result: QueryResult) -> String {
     let mut html = "<table style=\"border: 1px solid\">".to_string();
     match result {
-        QueryResult::Error((msg, _)) => return format!("Error: {}", msg),
+        QueryResult::Error((msg, _)) => return format!("Error: {msg}"),
         QueryResult::Success((result, _)) => {
             for column in &result.columns {
-                html += &format!("<th style=\"border: 1px solid\">{}</th>", column);
+                html += &format!("<th style=\"border: 1px solid\">{column}</th>");
             }
             for row in result.rows {
                 html += "<tr style=\"border: 1px solid\">";
@@ -48,7 +48,7 @@ fn create_map_canvas(result: QueryResult) -> String {
     const options = {
       lat: 0,
       lng: 0,
-      zoom: 1,
+      zoom: 2,
       style: "http://{s}.tile.osm.org/{z}/{x}/{y}.png"
     }
 
@@ -84,7 +84,7 @@ fn create_map_canvas(result: QueryResult) -> String {
 }
 
 // Serve a request to load the page
-async fn serve(req: Request, db: libsql_client::Connection) -> Result<Response> {
+async fn serve(req: Request, db: impl libsql_client::Connection) -> anyhow::Result<String> {
     // Recreate the tables if they do not exist yet
     db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")
     .await
@@ -113,8 +113,8 @@ async fn serve(req: Request, db: libsql_client::Connection) -> Result<Response> 
         Statement::with_params(
             "INSERT INTO coordinates VALUES (?, ?, ?)",
             &[
-                CellValue::Float(coordinates.0 as f64),
-                CellValue::Float(coordinates.1 as f64),
+                Value::Float(coordinates.0 as f64),
+                Value::Float(coordinates.1 as f64),
                 airport.into(),
             ],
         ),
@@ -129,8 +129,8 @@ async fn serve(req: Request, db: libsql_client::Connection) -> Result<Response> 
         db.execute("SELECT airport, lat, long FROM coordinates")
             .await?,
     );
-    let html = format!("{} Scoreboard: <br /> {}", canvas, scoreboard);
-    Response::from_html(html)
+    let html = format!("{canvas} Scoreboard: <br /> {scoreboard}");
+    Ok(html)
 }
 
 #[event(fetch)]
@@ -142,14 +142,17 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
 
     router
         .get_async("/", |req, ctx| async move {
-            let db = match libsql_client::Connection::connect_from_ctx(&ctx) {
+            let db = match libsql_client::workers::Connection::connect_from_ctx(&ctx) {
                 Ok(db) => db,
                 Err(e) => {
                     console_log!("Error {e}");
                     return Response::from_html(format!("Error establishing connection: {e}"));
                 }
             };
-            serve(req, db).await
+            match serve(req, db).await {
+                Ok(html) => Response::from_html(html),
+                Err(e) => Err(Error::from(format!("{e}"))),
+            }
         })
         .get("/worker-version", |_, ctx| {
             let version = ctx.var("WORKERS_RS_VERSION")?.to_string();
