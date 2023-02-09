@@ -129,7 +129,7 @@ async fn serve(req: Request, db: impl libsql_client::Connection) -> anyhow::Resu
         db.execute("SELECT airport, lat, long FROM coordinates")
             .await?,
     );
-    let html = format!("{canvas} Scoreboard: <br /> {scoreboard} <footer>Map data from OpenStreetMap (https://tile.osm.org/)</footer>");
+    let html = format!("{canvas} Database powered by <a href=\"https://chiselstrike.com/\">Turso</a>. <br /> Scoreboard: <br /> {scoreboard} <footer>Map data from OpenStreetMap (https://tile.osm.org/)</footer>");
     Ok(html)
 }
 
