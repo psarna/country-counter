@@ -12,7 +12,7 @@ default = ["console_error_panic_hook"]
 [dependencies]
 cfg-if = "0.1.2"
 worker = "0.0.12"
-libsql-client = { version = "0.5.0", default-features = false, features = ["workers_backend"] }
+libsql-client = { version = "0.5.1", default-features = false, features = ["workers_backend"] }
 wasm-bindgen = "=0.2.83" # FIXME: workers do not work with 0.2.84 for some reason, investigate
 
 # The `console_error_panic_hook` crate provides better debugging of panics by
