@@ -113,8 +113,8 @@ async fn serve(req: Request, db: impl libsql_client::Connection) -> anyhow::Resu
         Statement::with_params(
             "INSERT INTO coordinates VALUES (?, ?, ?)",
             &[
-                Value::Float(coordinates.0 as f64),
-                Value::Float(coordinates.1 as f64),
+                Value::Real(coordinates.0 as f64),
+                Value::Real(coordinates.1 as f64),
                 airport.into(),
             ],
         ),
