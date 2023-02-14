@@ -1,4 +1,4 @@
-use libsql_client::{QueryResult, Statement, Value};
+use libsql_client::{params, QueryResult, Statement};
 use worker::*;
 
 mod utils;
@@ -84,7 +84,16 @@ fn create_map_canvas(result: QueryResult) -> String {
 }
 
 // Serve a request to load the page
-async fn serve(req: Request, db: impl libsql_client::Connection) -> anyhow::Result<String> {
+async fn serve(
+    airport: impl Into<String>,
+    country: impl Into<String>,
+    city: impl Into<String>,
+    coordinates: (f32, f32),
+    db: &impl libsql_client::Connection,
+) -> anyhow::Result<String> {
+    let airport = airport.into();
+    let country = country.into();
+    let city = city.into();
     // Recreate the tables if they do not exist yet
     db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")
     .await
@@ -95,28 +104,20 @@ async fn serve(req: Request, db: impl libsql_client::Connection) -> anyhow::Resu
     .await
     .ok();
 
-    // Update the tables - the per-city counter and airport coordinates
-    let cf = req.cf();
-    let airport = cf.colo();
-    let country = cf.country().unwrap_or_default();
-    let city = cf.city().unwrap_or_default();
-    let coordinates = cf.coordinates().unwrap_or_default();
     db.transaction([
         Statement::with_params(
-            "INSERT INTO counter VALUES (?, ?, 0)",
-            &[country.as_str(), city.as_str()],
+            "INSERT OR IGNORE INTO counter VALUES (?, ?, 0)",
+            // Parameters that have a single type can be passed as a regular slice
+            &[&country, &city],
         ),
         Statement::with_params(
             "UPDATE counter SET value = value + 1 WHERE country = ? AND city = ?",
             &[country, city],
         ),
         Statement::with_params(
-            "INSERT INTO coordinates VALUES (?, ?, ?)",
-            &[
-                Value::Real(coordinates.0 as f64),
-                Value::Real(coordinates.1 as f64),
-                airport.into(),
-            ],
+            "INSERT OR IGNORE INTO coordinates VALUES (?, ?, ?)",
+            // Parameters with different types can be passed to a convenience macro - params!()
+            params!(coordinates.0, coordinates.1, airport),
         ),
     ])
     .await
@@ -149,7 +150,12 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
                     return Response::from_html(format!("Error establishing connection: {e}"));
                 }
             };
-            match serve(req, db).await {
+            let cf = req.cf();
+            let airport = cf.colo();
+            let country = cf.country().unwrap_or_default();
+            let city = cf.city().unwrap_or_default();
+            let coordinates = cf.coordinates().unwrap_or_default();
+            match serve(airport, country, city, coordinates, &db).await {
                 Ok(html) => Response::from_html(html),
                 Err(e) => Err(Error::from(format!("{e}"))),
             }
@@ -160,4 +166,51 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
         })
         .run(req, env)
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use libsql_client::{Connection, QueryResult, ResultSet, Value};
+    fn test_db() -> libsql_client::local::Connection {
+        libsql_client::local::Connection::in_memory().unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_counter_updated() {
+        let db = test_db();
+
+        let payloads = [
+            ("waw", "PL", "Warsaw", (52.1672, 20.9679)),
+            ("waw", "PL", "Warsaw", (52.1672, 20.9679)),
+            ("waw", "PL", "Warsaw", (52.1672, 20.9679)),
+            ("hel", "FI", "Helsinki", (60.3183, 24.9497)),
+            ("hel", "FI", "Helsinki", (60.3183, 24.9497)),
+        ];
+
+        for p in payloads {
+            super::serve(p.0, p.1, p.2, p.3, &db).await.unwrap();
+        }
+
+        match db
+            .execute("SELECT country, city, value FROM counter")
+            .await
+            .unwrap()
+        {
+            QueryResult::Success((ResultSet { columns, rows }, _)) => {
+                assert_eq!(columns, vec!["country", "city", "value"]);
+                for row in rows {
+                    let city = match &row.cells["city"] {
+                        Value::Text(c) => c.as_str(),
+                        _ => panic!("Invalid entry for a city: {:?}", row),
+                    };
+                    match city {
+                        "Warsaw" => assert_eq!(row.cells["value"], 3.into()),
+                        "Helsinki" => assert_eq!(row.cells["value"], 2.into()),
+                        _ => panic!("Unknown city: {:?}", row),
+                    }
+                }
+            }
+            QueryResult::Error((e, _)) => panic!("{}", e),
+        }
+    }
 }
