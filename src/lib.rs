@@ -164,13 +164,24 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
             let version = ctx.var("WORKERS_RS_VERSION")?.to_string();
             Response::ok(version)
         })
+        .get("/locate", |req, _ctx| {
+            let cf = req.cf();
+            let airport = cf.colo();
+            let country = cf.country().unwrap_or_default();
+            let city = cf.city().unwrap_or_default();
+            let coordinates = cf.coordinates().unwrap_or_default();
+            Response::ok(format!(
+                "{};{};{};{};{}",
+                airport, country, city, coordinates.0, coordinates.1
+            ))
+        })
         .run(req, env)
         .await
 }
 
 #[cfg(test)]
 mod tests {
-    use libsql_client::{Connection, QueryResult, ResultSet, Value};
+    use libsql_client::{Connection, ResultSet, Value};
     fn test_db() -> libsql_client::local::Connection {
         libsql_client::local::Connection::in_memory().unwrap()
     }
@@ -191,26 +202,24 @@ mod tests {
             super::serve(p.0, p.1, p.2, p.3, &db).await.unwrap();
         }
 
-        match db
+        let ResultSet { columns, rows } = db
             .execute("SELECT country, city, value FROM counter")
             .await
             .unwrap()
-        {
-            QueryResult::Success((ResultSet { columns, rows }, _)) => {
-                assert_eq!(columns, vec!["country", "city", "value"]);
-                for row in rows {
-                    let city = match &row.cells["city"] {
-                        Value::Text(c) => c.as_str(),
-                        _ => panic!("Invalid entry for a city: {:?}", row),
-                    };
-                    match city {
-                        "Warsaw" => assert_eq!(row.cells["value"], 3.into()),
-                        "Helsinki" => assert_eq!(row.cells["value"], 2.into()),
-                        _ => panic!("Unknown city: {:?}", row),
-                    }
-                }
+            .into_result_set()
+            .unwrap();
+
+        assert_eq!(columns, vec!["country", "city", "value"]);
+        for row in rows {
+            let city = match &row.cells["city"] {
+                Value::Text(c) => c.as_str(),
+                _ => panic!("Invalid entry for a city: {:?}", row),
+            };
+            match city {
+                "Warsaw" => assert_eq!(row.cells["value"], 3.into()),
+                "Helsinki" => assert_eq!(row.cells["value"], 2.into()),
+                _ => panic!("Unknown city: {:?}", row),
             }
-            QueryResult::Error((e, _)) => panic!("{}", e),
         }
     }
 }
