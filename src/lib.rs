@@ -157,7 +157,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
             let coordinates = cf.coordinates().unwrap_or_default();
             match serve(airport, country, city, coordinates, &db).await {
                 Ok(html) => Response::from_html(html),
-                Err(e) => Err(Error::from(format!("{e}"))),
+                Err(e) => return Response::ok(format!("Error: {e}")),
             }
         })
         .get("/worker-version", |_, ctx| {
