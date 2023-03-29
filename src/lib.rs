@@ -1,4 +1,4 @@
-use libsql_client::{params, QueryResult, Statement};
+use libsql_client::{params, Col, Statement, StmtResult};
 use worker::*;
 
 mod utils;
@@ -15,29 +15,25 @@ fn log_request(req: &Request) {
 }
 
 // Take a query result and render it into a HTML table
-fn result_to_html_table(result: QueryResult) -> String {
+fn result_to_html_table(result: StmtResult) -> String {
     let mut html = "<table style=\"border: 1px solid\">".to_string();
-    match result {
-        QueryResult::Error((msg, _)) => return format!("Error: {msg}"),
-        QueryResult::Success((result, _)) => {
-            for column in &result.columns {
-                html += &format!("<th style=\"border: 1px solid\">{column}</th>");
-            }
-            for row in result.rows {
-                html += "<tr style=\"border: 1px solid\">";
-                for column in &result.columns {
-                    html += &format!("<td>{}</td>", row.cells[column]);
-                }
-                html += "</tr>";
-            }
+    for Col { name: column } in &result.cols {
+        let column = column.as_deref().unwrap_or_default();
+        html += &format!("<th style=\"border: 1px solid\">{column}</th>");
+    }
+    for row in result.rows {
+        html += "<tr style=\"border: 1px solid\">";
+        for cell in row {
+            html += &format!("<td>{cell}</td>");
         }
-    };
+        html += "</tr>";
+    }
     html += "</table>";
     html
 }
 
 // Create a javascript canvas which loads a map of visited airports
-fn create_map_canvas(result: QueryResult) -> String {
+fn create_map_canvas(result: StmtResult) -> String {
     let mut canvas = r#"
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/0.5.16/p5.min.js" type="text/javascript"></script>
   <script src="https://unpkg.com/mappa-mundi/dist/mappa.js" type="text/javascript"></script>
@@ -68,17 +64,25 @@ fn create_map_canvas(result: QueryResult) -> String {
       clear();
       let point;"#.to_owned();
 
-    match result {
-        QueryResult::Error((msg, _)) => console_log!("Error: {}", msg),
-        QueryResult::Success((result, _)) => {
-            for row in result.rows {
-                canvas += &format!(
-                    "point = myMap.latLngToPixel({}, {});\nellipse(point.x, point.y, 10, 10);\ntext({}, point.x, point.y);\n",
-                    row.cells["lat"], row.cells["long"], row.cells["airport"]
-                );
-            }
-        }
-    };
+    let iter = result.cols.iter();
+    let lat_idx = iter
+        .clone()
+        .position(|c| c.name.as_deref() == Some("lat"))
+        .unwrap_or_default();
+    let long_idx = iter
+        .clone()
+        .position(|c| c.name.as_deref() == Some("long"))
+        .unwrap_or_default();
+    let airport_idx = iter
+        .clone()
+        .position(|c| c.name.as_deref() == Some("airport"))
+        .unwrap_or_default();
+    for row in result.rows {
+        canvas += &format!(
+            "point = myMap.latLngToPixel({}, {});\nellipse(point.x, point.y, 10, 10);\ntext({}, point.x, point.y);\n",
+            row[lat_idx], row[long_idx], row[airport_idx]
+        );
+    }
     canvas += "}</script>";
     canvas
 }
@@ -89,7 +93,7 @@ async fn serve(
     country: impl Into<String>,
     city: impl Into<String>,
     coordinates: (f32, f32),
-    db: &impl libsql_client::Connection,
+    db: &impl libsql_client::DatabaseClient,
 ) -> anyhow::Result<String> {
     let airport = airport.into();
     let country = country.into();
@@ -104,7 +108,7 @@ async fn serve(
     .await
     .ok();
 
-    db.transaction([
+    db.batch([
         Statement::with_params(
             "INSERT OR IGNORE INTO counter VALUES (?, ?, 0)",
             // Parameters that have a single type can be passed as a regular slice
@@ -143,7 +147,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
 
     router
         .get_async("/", |req, ctx| async move {
-            let db = match libsql_client::workers::Connection::connect_from_ctx(&ctx) {
+            let db = match libsql_client::workers::Client::from_ctx(&ctx) {
                 Ok(db) => db,
                 Err(e) => {
                     console_log!("Error {e}");
@@ -157,7 +161,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
             let coordinates = cf.coordinates().unwrap_or_default();
             match serve(airport, country, city, coordinates, &db).await {
                 Ok(html) => Response::from_html(html),
-                Err(e) => return Response::ok(format!("Error: {e}")),
+                Err(e) => Response::ok(format!("Error: {e}")),
             }
         })
         .get("/worker-version", |_, ctx| {
@@ -181,9 +185,9 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
 
 #[cfg(test)]
 mod tests {
-    use libsql_client::{Connection, ResultSet, Value};
-    fn test_db() -> libsql_client::local::Connection {
-        libsql_client::local::Connection::in_memory().unwrap()
+    use libsql_client::{DatabaseClient, ResultSet, Value};
+    fn test_db() -> libsql_client::local::Client {
+        libsql_client::local::Client::in_memory().unwrap()
     }
 
     #[tokio::test]
