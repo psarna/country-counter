@@ -63,17 +63,11 @@ fn create_map_canvas(result: ResultSet) -> String {
       clear();
       let point;"#.to_owned();
 
-    let iter = result.columns.iter();
-    let lat_idx = iter.clone().position(|c| c == "lat").unwrap_or_default();
-    let long_idx = iter.clone().position(|c| c == "long").unwrap_or_default();
-    let airport_idx = iter
-        .clone()
-        .position(|c| c == "airport")
-        .unwrap_or_default();
     for row in result.rows {
         canvas += &format!(
             "point = myMap.latLngToPixel({}, {});\nellipse(point.x, point.y, 10, 10);\ntext({}, point.x, point.y);\n",
-            row.values[lat_idx], row.values[long_idx], row.values[airport_idx]
+            // NOTICE: value_map is not very efficient and only enabled if the feature "mapping_names_to_values_in_rows" is enabled
+            row.value_map["lat"], row.value_map["long"], row.value_map["airport"]
         );
     }
     canvas += "}</script>";
@@ -110,16 +104,19 @@ async fn serve(
         "INSERT OR IGNORE INTO counter VALUES (?, ?, 0)",
         // Parameters that have a single type can be passed as a regular slice
         &[&country, &city],
-    )).await?;
+    ))
+    .await?;
     tx.execute(Statement::with_args(
         "UPDATE counter SET value = value + 1 WHERE country = ? AND city = ?",
         &[country, city],
-    )).await?;
+    ))
+    .await?;
     tx.execute(Statement::with_args(
         "INSERT OR IGNORE INTO coordinates VALUES (?, ?, ?)",
         // Parameters with different types can be passed to a convenience macro - args!()
         args!(coordinates.0, coordinates.1, airport),
-    )).await?;
+    ))
+    .await?;
     tx.commit().await?;
 
     let counter_response = db.execute("SELECT * FROM counter").await?;
