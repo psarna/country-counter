@@ -1,4 +1,4 @@
-use libsql_client::{params, ResultSet, Statement};
+use libsql_client::{args, ResultSet, Statement};
 use worker::*;
 
 mod utils;
@@ -105,24 +105,22 @@ async fn serve(
         console_log!("Error creating table: {e}");
         anyhow::bail!("{e}")
     };
-    db.batch([
-        Statement::with_params(
-            "INSERT OR IGNORE INTO counter VALUES (?, ?, 0)",
-            // Parameters that have a single type can be passed as a regular slice
-            &[&country, &city],
-        ),
-        Statement::with_params(
-            "UPDATE counter SET value = value + 1 WHERE country = ? AND city = ?",
-            &[country, city],
-        ),
-        Statement::with_params(
-            "INSERT OR IGNORE INTO coordinates VALUES (?, ?, ?)",
-            // Parameters with different types can be passed to a convenience macro - params!()
-            params!(coordinates.0, coordinates.1, airport),
-        ),
-    ])
-    .await
-    .ok();
+    let mut tx = db.transaction().await?;
+    tx.execute(Statement::with_args(
+        "INSERT OR IGNORE INTO counter VALUES (?, ?, 0)",
+        // Parameters that have a single type can be passed as a regular slice
+        &[&country, &city],
+    )).await?;
+    tx.execute(Statement::with_args(
+        "UPDATE counter SET value = value + 1 WHERE country = ? AND city = ?",
+        &[country, city],
+    )).await?;
+    tx.execute(Statement::with_args(
+        "INSERT OR IGNORE INTO coordinates VALUES (?, ?, ?)",
+        // Parameters with different types can be passed to a convenience macro - args!()
+        args!(coordinates.0, coordinates.1, airport),
+    )).await?;
+    tx.commit().await?;
 
     let counter_response = db.execute("SELECT * FROM counter").await?;
     let scoreboard = result_to_html_table(counter_response);
