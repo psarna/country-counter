@@ -1,4 +1,4 @@
-use libsql_client::{params, Col, Statement, StmtResult};
+use libsql_client::{params, ResultSet, Statement};
 use worker::*;
 
 mod utils;
@@ -15,15 +15,14 @@ fn log_request(req: &Request) {
 }
 
 // Take a query result and render it into a HTML table
-fn result_to_html_table(result: StmtResult) -> String {
+fn result_to_html_table(result: ResultSet) -> String {
     let mut html = "<table style=\"border: 1px solid\">".to_string();
-    for Col { name: column } in &result.cols {
-        let column = column.as_deref().unwrap_or_default();
+    for column in result.columns {
         html += &format!("<th style=\"border: 1px solid\">{column}</th>");
     }
     for row in result.rows {
         html += "<tr style=\"border: 1px solid\">";
-        for cell in row {
+        for cell in row.values {
             html += &format!("<td>{cell}</td>");
         }
         html += "</tr>";
@@ -33,7 +32,7 @@ fn result_to_html_table(result: StmtResult) -> String {
 }
 
 // Create a javascript canvas which loads a map of visited airports
-fn create_map_canvas(result: StmtResult) -> String {
+fn create_map_canvas(result: ResultSet) -> String {
     let mut canvas = r#"
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/0.5.16/p5.min.js" type="text/javascript"></script>
   <script src="https://unpkg.com/mappa-mundi/dist/mappa.js" type="text/javascript"></script>
@@ -64,23 +63,17 @@ fn create_map_canvas(result: StmtResult) -> String {
       clear();
       let point;"#.to_owned();
 
-    let iter = result.cols.iter();
-    let lat_idx = iter
-        .clone()
-        .position(|c| c.name.as_deref() == Some("lat"))
-        .unwrap_or_default();
-    let long_idx = iter
-        .clone()
-        .position(|c| c.name.as_deref() == Some("long"))
-        .unwrap_or_default();
+    let iter = result.columns.iter();
+    let lat_idx = iter.clone().position(|c| c == "lat").unwrap_or_default();
+    let long_idx = iter.clone().position(|c| c == "long").unwrap_or_default();
     let airport_idx = iter
         .clone()
-        .position(|c| c.name.as_deref() == Some("airport"))
+        .position(|c| c == "airport")
         .unwrap_or_default();
     for row in result.rows {
         canvas += &format!(
             "point = myMap.latLngToPixel({}, {});\nellipse(point.x, point.y, 10, 10);\ntext({}, point.x, point.y);\n",
-            row[lat_idx], row[long_idx], row[airport_idx]
+            row.values[lat_idx], row.values[long_idx], row.values[airport_idx]
         );
     }
     canvas += "}</script>";
@@ -98,16 +91,20 @@ async fn serve(
     let airport = airport.into();
     let country = country.into();
     let city = city.into();
+
     // Recreate the tables if they do not exist yet
-    db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")
-    .await
-    .ok();
-    db.execute(
+    if let Err(e) = db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")
+    .await {
+        console_log!("Error creating table: {e}");
+        anyhow::bail!("{e}")
+    };
+    if let Err(e) = db.execute(
         "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, airport TEXT, PRIMARY KEY (lat, long))",
     )
-    .await
-    .ok();
-
+    .await {
+        console_log!("Error creating table: {e}");
+        anyhow::bail!("{e}")
+    };
     db.batch([
         Statement::with_params(
             "INSERT OR IGNORE INTO counter VALUES (?, ?, 0)",
@@ -134,7 +131,15 @@ async fn serve(
         db.execute("SELECT airport, lat, long FROM coordinates")
             .await?,
     );
-    let html = format!("{canvas} Database powered by <a href=\"https://chiselstrike.com/\">Turso</a>. <br /> Scoreboard: <br /> {scoreboard} <footer>Map data from OpenStreetMap (https://tile.osm.org/)</footer>");
+    let html = format!(
+        r#"
+        <body>
+        {canvas} Database powered by <a href="https://chiselstrike.com/">Turso</a>.
+        <br /> Scoreboard: <br /> {scoreboard}
+        <footer>Map data from OpenStreetMap (https://tile.osm.org/)</footer>
+        </body>
+        "#
+    );
     Ok(html)
 }
 
@@ -147,7 +152,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
 
     router
         .get_async("/", |req, ctx| async move {
-            let db = match libsql_client::workers::Client::from_ctx(&ctx) {
+            let db = match libsql_client::workers::Client::from_ctx(&ctx).await {
                 Ok(db) => db,
                 Err(e) => {
                     console_log!("Error {e}");
