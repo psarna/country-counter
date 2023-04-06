@@ -1,13 +1,14 @@
-use libsql_client::{args, ResultSet, Statement};
+use libsql_client::DatabaseClient;
+use libsql_client::{args, workers::Client, ResultSet, Statement};
+use std::collections::HashMap;
 use worker::*;
 
 mod utils;
 
 // Log each request to dev console
 fn log_request(req: &Request) {
-    console_log!(
-        "{} - [{}], located at: {:?}, within: {}",
-        Date::now().to_string(),
+    tracing::info!(
+        "[{}], located at: {:?}, within: {}",
         req.path(),
         req.cf().coordinates().unwrap_or_default(),
         req.cf().region().unwrap_or_else(|| "unknown region".into())
@@ -89,17 +90,17 @@ async fn serve(
     // Recreate the tables if they do not exist yet
     if let Err(e) = db.execute("CREATE TABLE IF NOT EXISTS counter(country TEXT, city TEXT, value, PRIMARY KEY(country, city)) WITHOUT ROWID")
     .await {
-        console_log!("Error creating table: {e}");
+        tracing::error!("Error creating table: {e}");
         anyhow::bail!("{e}")
     };
     if let Err(e) = db.execute(
         "CREATE TABLE IF NOT EXISTS coordinates(lat INT, long INT, airport TEXT, PRIMARY KEY (lat, long))",
     )
     .await {
-        console_log!("Error creating table: {e}");
+        tracing::error!("Error creating table: {e}");
         anyhow::bail!("{e}")
     };
-    let mut tx = db.transaction().await?;
+    let tx = db.transaction().await?;
     tx.execute(Statement::with_args(
         "INSERT OR IGNORE INTO counter VALUES (?, ?, 0)",
         // Parameters that have a single type can be passed as a regular slice
@@ -145,12 +146,14 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
     utils::set_panic_hook();
     let router = Router::new();
 
+    tracing_worker::init(&env);
+
     router
         .get_async("/", |req, ctx| async move {
             let db = match libsql_client::workers::Client::from_ctx(&ctx).await {
                 Ok(db) => db,
                 Err(e) => {
-                    console_log!("Error {e}");
+                    tracing::error!("Error {e}");
                     return Response::from_html(format!("Error establishing connection: {e}"));
                 }
             };
@@ -178,6 +181,41 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
                 "{};{};{};{};{}",
                 airport, country, city, coordinates.0, coordinates.1
             ))
+        })
+        .get_async("/users", |_, ctx| async move {
+            let client = match Client::from_ctx(&ctx).await {
+                Ok(client) => client,
+                Err(e) => return Response::error(e.to_string(), 500),
+            };
+
+            let stmt = "select * from example_users";
+            let rs = match client.execute(stmt).await {
+                Ok(rs) => rs,
+                Err(e) => return Response::error(e.to_string(), 500),
+            };
+
+            Response::from_json(&serde_json::json!(rs))
+        })
+        .get_async("/add-user", |req, ctx| async move {
+            let url = req.url().unwrap();
+            let hash_query: HashMap<String, String> = url.query_pairs().into_owned().collect();
+            let email = match hash_query.get("email") {
+                Some(string) => string,
+                None => return Response::error("No email", 400),
+            };
+
+            let client = match libsql_client::workers::Client::from_ctx(&ctx).await {
+                Ok(client) => client,
+                Err(e) => return Response::error(e.to_string(), 500),
+            };
+
+            let stmt = Statement::with_args("insert into example_users values (?)", args!(email));
+            match client.execute(stmt).await {
+                Ok(_) => Response::from_json(&serde_json::json!({
+                    "result": "Added"
+                })),
+                Err(e) => Response::error(e.to_string(), 500),
+            }
         })
         .run(req, env)
         .await

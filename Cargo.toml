@@ -12,7 +12,7 @@ default = ["console_error_panic_hook"]
 [dependencies]
 cfg-if = "0.1.2"
 worker = "0.0.12"
-libsql-client = { version = "0.21.1", default-features = false, features = ["workers_backend", "mapping_names_to_values_in_rows"] }
+libsql-client = { version = "0.22.3", default-features = false, features = ["workers_backend", "mapping_names_to_values_in_rows"] }
 wasm-bindgen = "=0.2.83" # Bug in wasm-bindgen: https://github.com/rustwasm/wasm-bindgen/issues/3276
 
 # The `console_error_panic_hook` crate provides better debugging of panics by
@@ -21,10 +21,14 @@ wasm-bindgen = "=0.2.83" # Bug in wasm-bindgen: https://github.com/rustwasm/wasm
 # code size when deploying.
 console_error_panic_hook = { version = "0.1.1", optional = true }
 anyhow = "1.0.69"
+serde_json = "1.0.95"
+tracing-subscriber = "0.3.16"
+tracing = "0.1.37"
+tracing-worker = "0.1.8"
 
 [dev-dependencies]
 # A local database file will be used for tests
-libsql-client = { version = "0.21.1", default-features = false, features = ["local_backend"] }
+libsql-client = { version = "0.22.3", default-features = false, features = ["local_backend"] }
 tokio = { version = "1", features = ["rt", "macros"] }
 
 
