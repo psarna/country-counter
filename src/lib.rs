@@ -1,5 +1,4 @@
-use libsql_client::DatabaseClient;
-use libsql_client::{args, workers::Client, ResultSet, Statement};
+use libsql_client::{args, Client, ResultSet, Statement};
 use std::collections::HashMap;
 use worker::*;
 
@@ -81,7 +80,7 @@ async fn serve(
     country: impl Into<String>,
     city: impl Into<String>,
     coordinates: (f32, f32),
-    db: &impl libsql_client::DatabaseClient,
+    db: &libsql_client::Client,
 ) -> anyhow::Result<String> {
     let airport = airport.into();
     let country = country.into();
@@ -100,26 +99,22 @@ async fn serve(
         tracing::error!("Error creating table: {e}");
         anyhow::bail!("{e}")
     };
-    let tx = db.transaction().await?;
-    tx.execute(Statement::with_args(
-        "INSERT OR IGNORE INTO counter VALUES (?, ?, 0)",
-        // Parameters that have a single type can be passed as a regular slice
-        &[&country, &city],
-    ))
+    db.batch([
+        Statement::with_args(
+            "INSERT OR IGNORE INTO counter VALUES (?, ?, 0)",
+            &[&country, &city],
+        ),
+        Statement::with_args(
+            "UPDATE counter SET value = value + 1 WHERE country = ? AND city = ?",
+            &[country, city],
+        ),
+        Statement::with_args(
+            "INSERT OR IGNORE INTO coordinates VALUES (?, ?, ?)",
+            // Parameters with different types can be passed to a convenience macro - args!()
+            args!(coordinates.0, coordinates.1, airport),
+        ),
+    ])
     .await?;
-    tx.execute(Statement::with_args(
-        "UPDATE counter SET value = value + 1 WHERE country = ? AND city = ?",
-        &[country, city],
-    ))
-    .await?;
-    tx.execute(Statement::with_args(
-        "INSERT OR IGNORE INTO coordinates VALUES (?, ?, ?)",
-        // Parameters with different types can be passed to a convenience macro - args!()
-        args!(coordinates.0, coordinates.1, airport),
-    ))
-    .await?;
-    tx.commit().await?;
-
     let counter_response = db.execute("SELECT * FROM counter").await?;
     let scoreboard = result_to_html_table(counter_response);
 
@@ -150,7 +145,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
 
     router
         .get_async("/", |req, ctx| async move {
-            let db = match libsql_client::workers::Client::from_ctx(&ctx).await {
+            let db = match Client::from_workers_env(&ctx.env).await {
                 Ok(db) => db,
                 Err(e) => {
                     tracing::error!("Error {e}");
@@ -183,7 +178,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
             ))
         })
         .get_async("/users", |_, ctx| async move {
-            let client = match Client::from_ctx(&ctx).await {
+            let client = match Client::from_workers_env(&ctx.env).await {
                 Ok(client) => client,
                 Err(e) => return Response::error(e.to_string(), 500),
             };
@@ -204,7 +199,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
                 None => return Response::error("No email", 400),
             };
 
-            let client = match libsql_client::workers::Client::from_ctx(&ctx).await {
+            let client = match Client::from_workers_env(&ctx.env).await {
                 Ok(client) => client,
                 Err(e) => return Response::error(e.to_string(), 500),
             };
