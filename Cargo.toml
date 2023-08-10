@@ -11,9 +11,9 @@ default = ["console_error_panic_hook"]
 
 [dependencies]
 cfg-if = "0.1.2"
-worker = "0.0.12"
+worker = "0.0.18"
 libsql-client = { version = "0.31", default-features = false, features = ["workers_backend", "mapping_names_to_values_in_rows"] }
-wasm-bindgen = "=0.2.83" # Bug in wasm-bindgen: https://github.com/rustwasm/wasm-bindgen/issues/3276
+#wasm-bindgen = "=0.2.83" # Bug in wasm-bindgen: https://github.com/rustwasm/wasm-bindgen/issues/3276
 
 # The `console_error_panic_hook` crate provides better debugging of panics by
 # logging them with `console.error`. This is great for development, but requires
