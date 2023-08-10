@@ -145,7 +145,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
 
     router
         .get_async("/", |req, ctx| async move {
-            let db = match Client::from_workers_env(&ctx.env).await {
+            let db = match Client::from_workers_env(&ctx.env) {
                 Ok(db) => db,
                 Err(e) => {
                     tracing::error!("Error {e}");
@@ -178,7 +178,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
             ))
         })
         .get_async("/users", |_, ctx| async move {
-            let client = match Client::from_workers_env(&ctx.env).await {
+            let client = match Client::from_workers_env(&ctx.env) {
                 Ok(client) => client,
                 Err(e) => return Response::error(e.to_string(), 500),
             };
@@ -199,7 +199,7 @@ pub async fn main(req: Request, env: Env, _ctx: worker::Context) -> Result<Respo
                 None => return Response::error("No email", 400),
             };
 
-            let client = match Client::from_workers_env(&ctx.env).await {
+            let client = match Client::from_workers_env(&ctx.env) {
                 Ok(client) => client,
                 Err(e) => return Response::error(e.to_string(), 500),
             };
